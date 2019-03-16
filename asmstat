@@ -4,6 +4,7 @@
 # Description : Wrapper for iostat that maps ASM devices
 # Author      : Martin Berger <martin.a.berger@gmail.com>
 # Repository  : https://github.com/berx/asm_helpers
+#
 # original Author      : Bart Sjerps <bart@outrun.nl>
 # origin               : https://github.com/outrunnl/asmdisks
 #
@@ -32,6 +33,7 @@ exclude_others=0
 sedstring=""
 fullname=0
 fullnameonly=0
+mydir=$(dirname $0)
 
 #============================================================================
 # Usage
@@ -107,7 +109,7 @@ do
   then
     path=$word
     _debug "we found a path: $path"
-    disks=$(./get_real_device $path)
+    disks=$($mydir/get_real_device $path)
     _debug "disks: >>$disks<<"
     generate_sed=1
   else
