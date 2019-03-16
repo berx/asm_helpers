@@ -4,6 +4,7 @@
 # Description : Follows chains of symlinks and multipath device(s) to their
 #               'real' sdxx devices. 
 # Author      : Martin Berger <martin.a.berger@gmail.com>
+# Repository  : https://github.com/berx/asm_helpers
 # License     : GPLv3+
 # ---------------------------------------------------------------------------
 # 
