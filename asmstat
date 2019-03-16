@@ -1,0 +1,151 @@
+#!/bin/bash
+#============================================================================
+# Title       : asmstat
+# Description : Wrapper for iostat that maps ASM devices
+# Author      : Martin Berger <martin.a.berger@gmail.com>
+#
+# original Author      : Bart Sjerps <bart@outrun.nl>
+# origin               : https://github.com/outrunnl/asmdisks
+#
+# License     : GPLv3+
+# ---------------------------------------------------------------------------
+
+#============================================================================
+# Initialization - Logging - Etc.
+# ---------------------------------------------------------------------------
+# Filter device-mapper and non-disk devices
+sedexclusion="/^dm-/d;/^sd/d;"
+
+#============================================================================
+# Configuration parameters:
+# ---------------------------------------------------------------------------
+
+_DEBUG=0
+
+#============================================================================
+# Initialization - Logging - Etc.
+# ---------------------------------------------------------------------------
+
+# for better regexp ...
+shopt -s extglob
+exclude_others=0
+sedstring=""
+fullname=0
+fullnameonly=0
+
+#============================================================================
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<- EOF
+
+    $(basename $0) [-?] [-e] [-f] [-o] <iostat parameters>
+
+      -?            - this page
+      -e            - exclude disks which does not belong to ASM
+      -f            - show full ASM diskname (do not truncate)
+      -o            - show ASM diskname only (no device)
+
+    $(basename $0) is a wrapper for iostat in ASM setup. 
+    It replaces all sdxx devices by a combination of ASM-diskname and the device. 
+    All parameters are directly passed to iostat.
+    Proper ORACLE_HOME $ ORACLE_SID must be set for an ASM instance and 
+    the binary asmcmd must be in the PATH.
+
+EOF
+exit
+}
+  
+# some Debug helpers
+_debug () {
+  [ $_DEBUG -gt 0 ] && (>&2 echo "DEBUG: $1 $in_pipe")
+}
+_debugpipe() {
+  read in_pipe
+  _debug $1 $in_pipe
+}
+
+# min / max from https://stackoverflow.com/questions/10415064/how-to-calculate-the-minimum-of-two-variables-simply-in-bash
+min() {
+    printf "%s\n" "${@:2}" | sort "$1" | head -n1
+}
+max() {
+    # using sort's -r (reverse) option - using tail instead of head is also possible
+    min ${1}r ${@:2}
+}
+
+# Translate -? or --help into manpage
+while [[ $# -gt 0 ]]
+do
+  case $1 in
+    -\?|--help) usage ;;
+    -e) exclude_others=1
+        shift ;;
+    -f) fullname=1
+        shift ;;
+    -o) fullnameonly=1
+         shift ;;
+    *) break ;;
+  esac
+done
+
+#============================================================================
+# Main
+# ---------------------------------------------------------------------------
+
+which asmcmd >/dev/null || (echo "asmcmd not found" && echo "exit 1")
+
+
+disklist=$(asmcmd lsdsk -k --suppressheader | awk ' { print $4 " " $10 }')
+_debug ">> $disklist <<"
+
+for word in $disklist
+do
+  _debug "word: $word"
+  if [[ $word =~ \/.* ]] 
+  then
+    path=$word
+    _debug "we found a path: $path"
+    disks=$(./get_real_device $path)
+    _debug "disks: >>$disks<<"
+    generate_sed=1
+  else
+    diskname=$word
+    _debug "diskname: $word"
+    generate_sed=0
+  fi
+  
+  if [[ $generate_sed -eq 1 ]] 
+  then
+    if [[ $fullname -eq 0 ]] 
+    then 
+      short_diskname="${diskname:0:12}"
+    else
+      short_diskname=${diskname}
+    fi
+    short_diskname_length=$(min -g $(echo "${short_diskname}" | wc -c) 13 )
+
+    for disk in $disks
+    do
+#                   replace the ${disk} and ${short_diskname_length} occurances (thats the \{...\}) of whitespaces ( \s)            
+      if [[ $fullnameonly -eq 0 ]] 
+      then 
+        sed_one_line=$(echo -e "s/^${disk}\s\{${short_diskname_length}\}/$short_diskname-$disk/;\n")
+      else
+        sed_one_line=$(echo -e "s/^${disk}\s\{${short_diskname_length}\}/$short_diskname/;\n")
+      fi
+      _debug "sed_ine_line : $sed_one_line"
+      sedstring="${sedstring}${sed_one_line}"
+    done
+    generate_sed=0
+  fi
+
+done
+if [[ $exclude_others -eq 1 ]]
+then 
+  sedstring="${sedstring}${sedexclusion}"
+fi
+_debug "sedstring: $sedstring"
+iostat $@ | sed -u "$sedstring"
+

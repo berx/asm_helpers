@@ -1,0 +1,191 @@
+#!/bin/bash
+#============================================================================
+# Title       : get_real_device
+# Description : Follows chains of symlinks and multipath device(s) to their
+#               'real' sdxx devices. 
+# Author      : Martin Berger <martin.a.berger@gmail.com>
+# License     : GPLv3+
+# ---------------------------------------------------------------------------
+# 
+#  dig from any multipath device the real dev name(s)
+#
+#  return values:
+#     1             - input parameter doesn't match
+#     2             - file/dev doesn't exist
+#     3             - return name is same as input (without path)
+
+#============================================================================
+# Configuration parameters:
+# ---------------------------------------------------------------------------
+
+_DEBUG=0
+
+#============================================================================
+# Initialization - Logging - Etc.
+# ---------------------------------------------------------------------------
+
+# for better regexp ...
+shopt -s extglob
+
+last_dm=0
+last_sd=1
+escape=9
+
+
+#============================================================================
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<- EOF
+    
+    $(basename $0) [-d] [-S] <file>
+    
+      -d            - include last dm- device
+      -S            - exclude sd devices
+      <file>        - device-file (or symlink to device) to be evaluated
+    
+    $(basename $0) tries to identify the underlying device(s) of a given dm-
+    device (or a symlink pointing to it). This can be used to determinate 
+    multipath configuration without root (or sudo)
+    if <file> is not a proper multipath-device, <file> is returned
+    
+EOF
+}
+
+#============================================================================
+# Functions
+# ---------------------------------------------------------------------------
+
+# min / max from https://stackoverflow.com/questions/10415064/how-to-calculate-the-minimum-of-two-variables-simply-in-bash
+min() {
+    printf "%s\n" "${@:2}" | sort "$1" | head -n1
+}
+max() {
+    # using sort's -r (reverse) option - using tail instead of head is also possible
+    min ${1}r ${@:2}
+}
+
+trim() {
+    local var="$*"
+    # remove leading whitespace characters
+    var="${var#"${var%%[![:space:]]*}"}"
+    # remove trailing whitespace characters
+    var="${var%"${var##*[![:space:]]}"}"   
+    echo -n "$var"
+}
+
+# some Debug helpers 
+_debug () {
+  [ $_DEBUG -gt 0 ] && (>&2 echo "DEBUG: $1 $in_pipe")
+}
+_debugpipe() {
+  read in_pipe
+  _debug $1 $in_pipe
+}
+
+#  _fn_get_slaves
+#  checks if $1 has some slaves in /sys/devices/virtual/block/$1/slaves/
+#  and returns (echo) them 
+#    dm-xxx devices has slaves
+#    sdxxx are leaves (so no slaves)
+#  if there are no slaves, the input ($1) is echoed back and _2_ is returned 
+_fn_get_slaves(){
+  _new_slaves=$(ls /sys/devices/virtual/block/$1/slaves/ 2>&1)
+  ret=$?
+  _debug "_fn_get_slaves: _ret: $ret"
+# if "ls ..." showed an error, so let's return the input variable, 
+#   not the error-text
+  if [[ ! $ret -eq 0 ]] 
+  then
+    _new_slaves=$1
+  fi
+#       -d            - include last dm- device
+  [[ $last_dm -eq 1 && $ret -eq 0 && $_new_slaves =~ .sd.* ]] && _new_slaves="$_new_slaves $1"
+#       -S            - exclude sd devices
+  [[ $last_sd -eq 0 && $ret -eq 0 && $_new_slaves =~ .sd.* ]] && _new_slaves=$(echo $_new_slaves | sed -e 's/sd\w*//g')
+  _debug "_fn_get_slaves - in: $1 - _new_slaves: $_new_slaves"
+  echo $_new_slaves| sort -u | tr '\n' ' ' | tr -d '\n'
+  return $ret
+}
+
+
+#============================================================================
+# main
+# ---------------------------------------------------------------------------
+
+OPTIND=1
+# Resetting OPTIND is necessary if getopts was used previously in the script.
+# It is a good idea to make OPTIND local if you process options in a function.
+# OPTARG is the argument in case of getopts x: <- (colon)
+
+while getopts hdS opt; do
+    case $opt in
+        h)
+            usage
+            exit 0
+            ;;
+        d)  last_dm=1 
+            ;;
+        S)  last_sd=0
+            ;;
+        *)
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+shift "$((OPTIND-1))"   # Discard the options and sentinel --
+
+infile=$1
+
+if [[ -z $infile ]] 
+then 
+  echo "input parameter is needed - what device should I look for?"
+  exit 1
+fi
+
+if [[ ! -e $infile ]]
+then 
+  echo "sorry, can not find file $infile"
+  exit 2
+fi
+
+target1=$(readlink -f -n $infile)
+ret=$?
+
+if [[ ! $ret -eq 0 ]]
+then
+  echo "readlink is sad and reports $ret"
+fi
+
+_debug "target1: $target1 - ret: $ret"
+
+slaves=`basename $target1`
+new_slaves=""
+while [[ $escape -gt 0 && $ret -eq 0 ]]
+do
+  ret=3
+  _debug "--- escape: $escape - slaves: ~$slaves~ - new_slaves: ~$new_slaves~ - ret: $ret"
+  new_slaves=""
+  
+  ((escape--))
+  for slave in $slaves 
+  do
+    _debug "current slave: $slave"
+    new_slave=$(_fn_get_slaves $slave )
+    ret=$(min -g $? $ret)
+    _debug "ret:        $ret"
+    _debug "new_slave:     $new_slave"
+    new_slaves=$(trim "${new_slaves} $new_slave")
+    _debug "new_slaves:    $new_slaves"
+  done
+# this sequence is required to sort-unique the content
+  new_slaves=$(echo $new_slaves |  tr ' ' '\n' | sort -u | tr '\n' ' ')
+#  new_slaves=$(trim "${new_slaves} $new_slave")
+  _debug "new_slaves: ~$new_slaves~"
+  [[ $slaves == $new_slaves ]] && break
+  slaves=$new_slaves
+done
+echo $slaves
+[[ $slaves == $(basename $target1) ]] && exit 3
